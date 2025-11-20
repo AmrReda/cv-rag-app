@@ -167,3 +167,35 @@ resource "aws_ecs_service" "api" {
   }
   depends_on = [aws_lb_listener.http]
 }
+
+resource "aws_ecs_task_definition" "worker" {
+  family                   = "${local.name}-worker"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu    = "512"
+  memory = "1024"
+  execution_role_arn = module.ecs_task_execution_role.iam_role_arn
+  container_definitions = jsonencode([{
+    name = "worker",
+    image = var.container_image,
+    essential = true,
+    command = ["sh","-c","celery -A worker_app worker -l info --concurrency=2"],
+    environment = [
+      { name = "DATA_DIR", value = "/data" },
+      { name = "REDIS_URL", value = "redis://"+module.redis.primary_endpoint_address+":6379/0" }
+    ],
+    secrets = [{ name="OPENAI_API_KEY", valueFrom=aws_secretsmanager_secret.openai.arn }]
+  }])
+}
+resource "aws_ecs_service" "worker" {
+  name            = "${local.name}-worker-svc"
+  cluster         = module.ecs.cluster_id
+  task_definition = aws_ecs_task_definition.worker.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+  network_configuration {
+    assign_public_ip = true
+    subnets         = module.vpc.public_subnets
+    security_groups = [module.vpc.default_security_group_id]
+  }
+}
