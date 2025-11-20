@@ -11,6 +11,7 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain.chains import RetrievalQA
+from worker_app import ingest_pdf_task
 
 app = FastAPI(title="CV RAG API", version="0.1.0")
 
@@ -47,9 +48,8 @@ async def ingest(file: UploadFile = File(...), document_id: Optional[str] = None
     doc_id = (document_id or file.filename.replace(" ", "_")).rsplit(".", 1)[0]
     content = await file.read()
     try:
-        text = extract_text_from_pdf(io.BytesIO(content))
-        qa, vs = _build_chain_from_text(text)
-        vs.save_local(_faiss_paths(doc_id))
+        # Enqueue task to Celery
+        ingest_pdf_task.delay(doc_id, content)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to ingest: {e}")
     return IngestResponse(document_id=doc_id)
