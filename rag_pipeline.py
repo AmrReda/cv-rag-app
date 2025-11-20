@@ -1,4 +1,5 @@
 from typing import Dict, Any
+import json
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -112,3 +113,93 @@ def ask_question(session_state: Dict[str, Any], question: str) -> str:
     # RetrievalQA returns a dict. By default answer is under 'result'
     answer = result.get("result", "").strip()
     return answer
+
+
+def score_candidate_fit(cv_text: str, jd_text: str) -> Dict[str, Any]:
+    """
+    Scores the candidate's fit against a job description.
+    Returns a dict with match_score, strengths, gaps, and pitch.
+    """
+    llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.2, model_kwargs={"response_format": {"type": "json_object"}})
+    
+    prompt = f"""
+    You are an expert technical recruiter. Compare the following CV against the Job Description (JD).
+    
+    CV Content:
+    {cv_text[:4000]}
+    
+    Job Description:
+    {jd_text[:4000]}
+    
+    Output a JSON object with the following keys:
+    - "match_score": integer between 0 and 100
+    - "strengths": list of strings (key matching skills/experience)
+    - "gaps": list of strings (missing requirements)
+    - "pitch": a short 2-3 sentence pitch for this candidate
+    
+    JSON Output:
+    """
+    
+    response = llm.invoke(prompt)
+    try:
+        return json.loads(response.content)
+    except json.JSONDecodeError:
+        return {
+            "match_score": 0,
+            "strengths": [],
+            "gaps": ["Error parsing analysis"],
+            "pitch": "Could not analyze fit."
+        }
+
+
+def extract_logistics(cv_text: str) -> Dict[str, str]:
+    """
+    Extracts logistics information from the CV.
+    Returns location, availability, work rights, and remote preference.
+    """
+    llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.0, model_kwargs={"response_format": {"type": "json_object"}})
+    prompt = f"""
+    Extract the following logistics information from the CV text below.
+    If not found, set value to "Not stated".
+    
+    CV Text:
+    {cv_text[:3000]}
+    
+    Output JSON with keys:
+    - "location": current city/country
+    - "availability": notice period or start date
+    - "work_rights": visa status or citizenship if mentioned
+    - "remote_preference": remote/hybrid/onsite if mentioned
+    """
+    response = llm.invoke(prompt)
+    try:
+        return json.loads(response.content)
+    except:
+        return {"location": "Unknown", "availability": "Unknown", "work_rights": "Unknown", "remote_preference": "Unknown"}
+
+
+def extract_experience_timeline(cv_text: str) -> list:
+    """
+    Extracts a timeline of professional experience.
+    Returns a list of objects with title, company, start, end, impact.
+    """
+    llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.0, model_kwargs={"response_format": {"type": "json_object"}})
+    prompt = f"""
+    Extract the professional experience timeline from the CV.
+    Return a JSON object with a key "timeline" containing a list of roles.
+    Each role should have:
+    - "title"
+    - "company"
+    - "start" (e.g. "Jan 2020")
+    - "end" (e.g. "Present" or "Dec 2022")
+    - "impact" (short summary of key achievement, max 10 words)
+    
+    CV Text:
+    {cv_text[:4000]}
+    """
+    response = llm.invoke(prompt)
+    try:
+        data = json.loads(response.content)
+        return data.get("timeline", [])
+    except:
+        return []

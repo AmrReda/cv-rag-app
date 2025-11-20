@@ -313,3 +313,15 @@ This is the minimal working skeleton for an AI recruiter assistant / talent scre
 - Endpoints:
   - POST /ingestions (multipart file) -> { document_id }
   - POST /queries { document_id, question } -> { answer }
+
+## Persistence & Multi-CV
+
+The application now supports persistence and multi-CV management:
+
+*   **Persistence:** FAISS indexes are saved to the `data/` directory (or `DATA_DIR` env var).
+*   **Multi-CV:** You can upload multiple CVs. Each is assigned a unique ID.
+*   **Selection:** Use the dropdown in the UI to switch between previously uploaded candidates.
+*   **API:**
+    *   `GET /documents`: List all available document IDs.
+    *   `POST /ingestions`: Upload and index a new CV.
+    *   `POST /queries`: Query a specific document by ID.

@@ -61,6 +61,10 @@ class AskRequest(BaseModel):
     document_id: str
     question: str
 
+class MatchRequest(BaseModel):
+    document_id: str
+    jd_text: str
+
 @app.post("/ingestions", response_model=IngestResponse)
 async def ingest(file: UploadFile = File(...), document_id: Optional[str] = None):
     """
@@ -113,3 +117,74 @@ async def ask(payload: AskRequest):
     result = qa.invoke({"query": payload.question})
     answer = result.get("result", "").strip()
     return JSONResponse({"answer": answer})
+
+@app.post("/matches")
+async def match_candidate(
+    file: UploadFile = File(None), 
+    jd_file: UploadFile = File(None),
+    document_id: Optional[str] = Body(None),
+    jd_text: Optional[str] = Body(None)
+):
+    """
+    Scores a candidate against a job description.
+    Accepts either file uploads (CV + JD) or existing document_id + JD text.
+
+    Args:
+        file (UploadFile): The CV file (optional).
+        jd_file (UploadFile): The job description file (optional).
+        document_id (Optional[str]): The document ID (optional).
+        jd_text (Optional[str]): The job description text (optional).
+
+    Returns:
+        JSONResponse: The score and details of the candidate-job description match.
+    """
+    from rag_pipeline import score_candidate_fit
+    
+    # 1. Get CV Text
+    cv_text = ""
+    if file:
+        content = await file.read()
+        cv_text = extract_text_from_pdf(io.BytesIO(content))
+    elif document_id:
+        # Load from FAISS? No, we need raw text for scoring. 
+        # Ideally we should have stored raw text. 
+        # For now, let's assume we can't easily get raw text back from FAISS without storing it.
+        # Fallback: We will require file upload for now or implement text persistence.
+        # Let's just fail if no file provided for this iteration as per plan "run transient"
+        raise HTTPException(status_code=400, detail="CV file upload required for matching in this version.")
+    else:
+        raise HTTPException(status_code=400, detail="CV file or document_id required.")
+
+    # 2. Get JD Text
+    job_description = ""
+    if jd_file:
+        jd_content = await jd_file.read()
+        # Assume JD is PDF for now, or text? Let's try PDF parser if PDF, else decode
+        if jd_file.filename.endswith(".pdf"):
+            job_description = extract_text_from_pdf(io.BytesIO(jd_content))
+        else:
+            job_description = jd_content.decode("utf-8")
+    elif jd_text:
+        job_description = jd_text
+    else:
+        raise HTTPException(status_code=400, detail="JD file or text required.")
+
+    # 3. Score
+    result = score_candidate_fit(cv_text, job_description)
+    return JSONResponse(result)
+
+@app.get("/documents")
+async def list_documents():
+    """
+    Lists all ingested documents available in the data directory.
+    Returns a list of document IDs.
+    """
+    if not os.path.exists(DATA_DIR):
+        return []
+    
+    docs = []
+    for name in os.listdir(DATA_DIR):
+        if name.startswith("faiss_"):
+            doc_id = name.replace("faiss_", "")
+            docs.append({"document_id": doc_id})
+    return docs
