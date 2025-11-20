@@ -29,9 +29,13 @@ jobs:
         run: |
           python -m compileall .
 
+      - name: Lowercase Repo Name
+        run: |
+          echo "REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - name: Build Docker
         run: |
-          docker build -t ghcr.io/${{ github.repository }}:sha-${{ github.sha }} .
+          docker build -t ghcr.io/$REPO_LOWER:sha-${{ github.sha }} .
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -42,10 +46,10 @@ jobs:
 
       - name: Push image
         run: |
-          IMAGE=ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+          IMAGE=ghcr.io/$REPO_LOWER:sha-${{ github.sha }}
           docker push $IMAGE
           # tag 'latest' on main
           if [ "${{ github.ref_name }}" = "main" ]; then
-            docker tag $IMAGE ghcr.io/${{ github.repository }}:latest
-            docker push ghcr.io/${{ github.repository }}:latest
+            docker tag $IMAGE ghcr.io/$REPO_LOWER:latest
+            docker push ghcr.io/$REPO_LOWER:latest
           fi
