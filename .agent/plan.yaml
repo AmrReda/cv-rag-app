@@ -1,0 +1,597 @@
+# .agent/plan.yaml
+# High-signal instructions for VS Code / Copilot Agent to refactor the app into a production-ready, multi-user path.
+
+context:
+  repo: "https://github.com/AmrReda/cv-rag-app"
+  description: >
+    Refactor a LangChain + Gradio CV RAG prototype into a service with FastAPI API,
+    async workers, containerization, CI/CD, and AWS IaC. Keep current Gradio app for demo,
+    but primary entrypoint becomes FastAPI. Use OpenAI (env-driven) and FAISS (local) initially.
+  non_goals:
+    - Perfect UX polish
+    - Complex multi-tenant billing
+    - K8s full hardening (we will keep ECS/Fargate baseline first)
+
+branching:
+  base_branch: "main"
+  feature_branch: "feature/api-docker-terraform"
+  subsequent_branches:
+    - "feature/secrets-worker-split"
+    - "feature/jd-match-scoring"
+    - "feature/logistics-timeline"
+    - "feature/persistence-multicv"
+
+global_constraints:
+  python: "3.11"
+  style: "black + isort"
+  secrets:
+    - "OPENAI_API_KEY from environment/Secrets Manager only (never in code)"
+  infra_target: "AWS (ECS Fargate baseline). Terraform in infra/aws"
+  observability: "structured logs (json), simple counters, basic error handling"
+  licenses: "Use permissive libs only (already in requirements)"
+
+milestones:
+  - name: "M1 – FastAPI + RAG parity"
+    goal: "Expose /ingestions and /queries mirroring current RAG flow"
+  - name: "M2 – Docker + CI/CD"
+    goal: "Build Docker, push to GHCR via GitHub Actions"
+  - name: "M3 – Terraform ECS baseline"
+    goal: "VPC, ALB, ECS Service/Task, S3, Redis, RDS placeholder"
+  - name: "M4 – Secrets Manager + Worker split"
+    goal: "OPENAI_API_KEY via Secrets Manager; Celery worker service"
+  - name: "M5 – Product features"
+    goal: "JD match scoring, recruiter pitch, logistics, experience timeline, persistence"
+
+# ---------- TASKS (In order) ----------
+tasks:
+
+  - id: T1-fastapi-skeleton
+    title: "Add FastAPI API mirroring current RAG"
+    intent: "Create API endpoints to ingest PDF and query answers using LangChain RetrievalQA"
+    edits:
+      - path: "api/main.py"
+        action: "create_or_update"
+        from_template: "fastapi_rag_api_v1"
+      - path: "requirements-api.txt"
+        action: "create_or_update"
+        contents: |
+          fastapi
+          uvicorn[standard]
+          python-multipart
+          langchain
+          langchain-openai
+          langchain-community
+          faiss-cpu
+          pypdf
+          tiktoken
+          numpy
+          python-dotenv
+      - path: "README.md"
+        action: "append_section"
+        header: "FastAPI API (service entrypoint)"
+        contents: |
+          - Run locally: `OPENAI_API_KEY=... uvicorn api.main:app --reload --port 8000`
+          - Endpoints:
+            - POST /ingestions (multipart file) -> { document_id }
+            - POST /queries { document_id, question } -> { answer }
+    acceptance_criteria:
+      - "POST /ingestions returns a document_id and persists FAISS index to /data"
+      - "POST /queries returns a grounded answer using saved FAISS index"
+      - "App runs locally with proper OPENAI_API_KEY env"
+
+  - id: T2-dockerfile
+    title: "Containerize app (multi-stage Dockerfile)"
+    edits:
+      - path: "Dockerfile"
+        action: "create_or_update"
+        from_template: "dockerfile_multistage_api"
+      - path: ".dockerignore"
+        action: "create_or_update"
+        contents: |
+          __pycache__/
+          .venv/
+          .env
+          .DS_Store
+          data/
+    acceptance_criteria:
+      - "docker build succeeds"
+      - "docker run -p 8000:8000 image serves /docs"
+      - "No secrets or venv copied into image"
+
+  - id: T3-gh-actions
+    title: "CI: build & push image to GHCR"
+    edits:
+      - path: ".github/workflows/ci.yml"
+        action: "create_or_update"
+        from_template: "gha_build_push_ghcr"
+    acceptance_criteria:
+      - "PR triggers build"
+      - "Image pushed to ghcr.io/AmrReda/cv-rag-app:<sha> and :latest on main"
+
+  - id: T4-terraform-ecs-baseline
+    title: "Terraform: VPC, ALB, ECS/Fargate, S3, Redis, RDS placeholder"
+    edits:
+      - path: "infra/aws/providers.tf"
+        action: "create_or_update"
+        from_template: "tf_providers"
+      - path: "infra/aws/variables.tf"
+        action: "create_or_update"
+        from_template: "tf_variables"
+      - path: "infra/aws/main.tf"
+        action: "create_or_update"
+        from_template: "tf_main_ecs_vpc_alb_s3_rds_redis"
+      - path: "infra/aws/README.md"
+        action: "create_or_update"
+        contents: |
+          # AWS Infra (Terraform)
+          ## Quick Start
+          ```
+          cd infra/aws
+          terraform init
+          terraform plan -var="db_username=admin" -var="db_password=ChangeMe!"
+          terraform apply -auto-approve -var="db_username=admin" -var="db_password=ChangeMe!"
+          ```
+    acceptance_criteria:
+      - "Terraform plan/apply creates VPC, ALB, ECS Cluster, Task, Service, S3, Redis, RDS stub"
+      - "ALB responds on / (FastAPI docs) when a task is running"
+      - "No plaintext secrets in TF"
+
+  - id: T5-secrets-manager
+    title: "Secrets Manager wiring for OPENAI_API_KEY"
+    depends_on: ["T4-terraform-ecs-baseline"]
+    edits:
+      - path: "infra/aws/main.tf"
+        action: "append_block"
+        from_template: "tf_secrets_manager_openai_and_iam"
+    acceptance_criteria:
+      - "Secret created: <project>-OPENAI_API_KEY"
+      - "ECS task has IAM permission to GetSecretValue"
+      - "Task definition injects secret into container as env OPENAI_API_KEY"
+
+  - id: T6-worker-split
+    title: "Split worker (Celery) and API services on ECS"
+    depends_on: ["T2-dockerfile","T4-terraform-ecs-baseline"]
+    edits:
+      - path: "worker_app.py"
+        action: "create_or_update"
+        from_template: "celery_worker_v1"
+      - path: "requirements-api.txt"
+        action: "append_lines"
+        contents: |
+          celery
+          redis
+      - path: "api/main.py"
+        action: "patch"
+        instructions: |
+          Modify POST /ingestions to enqueue to Celery (ingest_pdf_task.delay(doc_id, content))
+      - path: "infra/aws/main.tf"
+        action: "append_block"
+        from_template: "tf_ecs_worker_service"
+    acceptance_criteria:
+      - "Ingest now enqueues a job; worker writes FAISS index under /data"
+      - "Queries work once job completes"
+      - "Both services run on Fargate; API behind ALB, worker headless"
+
+  - id: T7-jd-match-scoring
+    title: "Feature: JD upload + match scoring (% / strengths / gaps / pitch)"
+    edits:
+      - path: "rag_pipeline.py"
+        action: "append_functions"
+        instructions: |
+          Add score_candidate_fit(cv_text, jd_text) returning:
+          { match_score:int, strengths:list[str], gaps:list[str], pitch:str }
+          Use ChatOpenAI with JSON mode; validate response.
+      - path: "api/main.py"
+        action: "append_endpoints"
+        instructions: |
+          Add POST /matches with multipart/form-data (cv_file?, jd_file required) or JSON (doc ids).
+          If files provided, run transient (no persist); else use existing FAISS for the CV.
+      - path: "app.py"
+        action: "append_ui"
+        instructions: |
+          Add JD file input and a right-panel to display Fit for Role (score, bullets, pitch).
+    acceptance_criteria:
+      - "Uploading CV + JD yields a score 0–100 and gaps/strengths"
+      - "No hallucinated skills if not in either doc; answer states unknown when missing"
+
+  - id: T8-logistics-timeline
+    title: "Feature: Logistics (location, work rights, notice) + Experience timeline"
+    edits:
+      - path: "rag_pipeline.py"
+        action: "append_functions"
+        instructions: |
+          Add extract_logistics(cv_text) -> {location, availability, work_rights, remote_preference}
+          Add extract_experience_timeline(cv_text) -> [{title, company, start, end, impact}]
+      - path: "app.py"
+        action: "append_ui"
+        instructions: |
+          Render Logistics box and Timeline panel under Candidate Summary.
+    acceptance_criteria:
+      - "If fields not in CV, render 'Not stated in CV'"
+      - "Timeline shows most recent first; no invented companies/dates"
+
+  - id: T9-persistence-multi-cv
+    title: "Persistence + multi-CV selection"
+    edits:
+      - path: "api/main.py"
+        action: "append_endpoints"
+        instructions: |
+          Add GET /documents to list embedded docs; each with document_id and metadata.
+      - path: "app.py"
+        action: "append_ui"
+        instructions: |
+          Add dropdown to select active candidate; load cached FAISS by ID.
+      - path: "README.md"
+        action: "append_section"
+        header: "Persistence & Multi-CV"
+        contents: "Describes FAISS save/load and UI selection"
+    acceptance_criteria:
+      - "Multiple CVs can be uploaded and switched without re-uploading"
+      - "Restarting API does not lose embedded docs located in DATA_DIR"
+
+checklist_after_each_task:
+  - "Run unit sanity (import modules, compile)"
+  - "Manual API smoke: /ingestions, /queries"
+  - "If infra touched: terraform validate/plan"
+  - "Update README where applicable"
+  - "Commit with conventional message and open/attach PR to matching GitHub issue"
+
+git_commands:
+  - "git checkout -b feature/api-docker-terraform"
+  - "git add -A && git commit -m 'feat(api): FastAPI + Docker + CI + Terraform skeleton'"
+  - "git push --set-upstream origin feature/api-docker-terraform"
+
+templates:
+  fastapi_rag_api_v1: |
+    from fastapi import FastAPI, UploadFile, File, HTTPException
+    from fastapi.responses import JSONResponse
+    from pydantic import BaseModel
+    from typing import Optional
+    import io, os
+    from cv_parser import extract_text_from_pdf
+    from rag_pipeline import build_prompt_template
+    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+    from langchain_community.vectorstores import FAISS
+    from langchain.chains import RetrievalQA
+
+    app = FastAPI(title="CV RAG API", version="0.1.0")
+    DATA_DIR = os.environ.get("DATA_DIR", "./data")
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    def _faiss_path(doc_id: str) -> str:
+      return os.path.join(DATA_DIR, f"faiss_{doc_id}")
+
+    def _build_chain_from_text(text: str):
+      splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=200)
+      chunks = splitter.split_text(text)
+      vs = FAISS.from_texts(chunks, OpenAIEmbeddings())
+      retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 4})
+      llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.2)
+      prompt = build_prompt_template()
+      chain = RetrievalQA.from_chain_type(
+        llm=llm, retriever=retriever, chain_type="stuff",
+        chain_type_kwargs={"prompt": prompt}, return_source_documents=False
+      )
+      return chain, vs
+
+    class IngestResponse(BaseModel):
+      document_id: str
+
+    class AskRequest(BaseModel):
+      document_id: str
+      question: str
+
+    @app.post("/ingestions", response_model=IngestResponse)
+    async def ingest(file: UploadFile = File(...), document_id: Optional[str] = None):
+      doc_id = (document_id or file.filename.replace(" ", "_")).rsplit(".", 1)[0]
+      content = await file.read()
+      try:
+        text = extract_text_from_pdf(io.BytesIO(content))
+        chain, vs = _build_chain_from_text(text)
+        vs.save_local(_faiss_path(doc_id))
+      except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to ingest: {e}")
+      return IngestResponse(document_id=doc_id)
+
+    @app.post("/queries")
+    async def query(payload: AskRequest):
+      idx = _faiss_path(payload.document_id)
+      if not os.path.exists(idx):
+        raise HTTPException(status_code=404, detail="Document not found or not embedded.")
+      vs = FAISS.load_local(idx, OpenAIEmbeddings(), allow_dangerous_deserialization=True)
+      retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 4})
+      llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.2)
+      prompt = build_prompt_template()
+      chain = RetrievalQA.from_chain_type(
+        llm=llm, retriever=retriever, chain_type="stuff",
+        chain_type_kwargs={"prompt": prompt}, return_source_documents=False
+      )
+      result = chain.invoke({"query": payload.question})
+      return JSONResponse({"answer": result.get("result","").strip()})
+
+  dockerfile_multistage_api: |
+    FROM python:3.11-slim AS builder
+    WORKDIR /app
+    COPY requirements.txt requirements-api.txt ./
+    RUN pip install --upgrade pip && \
+        pip wheel --wheel-dir=/wheels -r requirements.txt -r requirements-api.txt
+
+    FROM python:3.11-slim
+    ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+    WORKDIR /app
+    COPY --from=builder /wheels /wheels
+    RUN pip install --no-index --find-links=/wheels -r /wheels/requirements.txt -r /wheels/requirements-api.txt
+    COPY . /app
+    ENV DATA_DIR=/data
+    RUN mkdir -p /data
+    EXPOSE 8000
+    CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  gha_build_push_ghcr: |
+    name: CI
+    on:
+      push:
+        branches: [ main, feature/** ]
+      pull_request:
+    jobs:
+      build:
+        runs-on: ubuntu-latest
+        steps:
+          - uses: actions/checkout@v4
+          - name: Build Docker
+            run: docker build -t ghcr.io/${{ github.repository }}:sha-${{ github.sha }} .
+          - name: Log in to GHCR
+            uses: docker/login-action@v3
+            with:
+              registry: ghcr.io
+              username: ${{ github.actor }}
+              password: ${{ secrets.GITHUB_TOKEN }}
+          - name: Push image
+            run: |
+              IMAGE=ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+              docker push $IMAGE
+              if [ "${{ github.ref_name }}" = "main" ]; then
+                docker tag $IMAGE ghcr.io/${{ github.repository }}:latest
+                docker push ghcr.io/${{ github.repository }}:latest
+              fi
+
+  tf_providers: |
+    terraform {
+      required_version = ">= 1.7.0"
+      required_providers {
+        aws = {
+          source  = "hashicorp/aws"
+          version = "~> 5.50"
+        }
+      }
+    }
+    provider "aws" { region = var.region }
+
+  tf_variables: |
+    variable "region" { type = string  default = "ap-southeast-2" }
+    variable "project" { type = string default = "cv-rag-app" }
+    variable "vpc_cidr" { type = string default = "10.20.0.0/16" }
+    variable "public_subnets"  { type = list(string) default = ["10.20.1.0/24","10.20.2.0/24"] }
+    variable "private_subnets" { type = list(string) default = ["10.20.11.0/24","10.20.12.0/24"] }
+    variable "db_username" { type = string }
+    variable "db_password" { type = string sensitive = true }
+    variable "ecs_desired_count" { type = number default = 2 }
+    variable "container_image" { type = string default = "ghcr.io/AmrReda/cv-rag-app:latest" }
+
+  tf_main_ecs_vpc_alb_s3_rds_redis: |
+    locals { name = var.project }
+    module "vpc" {
+      source  = "terraform-aws-modules/vpc/aws"
+      version = "~> 5.0"
+      name = local.name
+      cidr = var.vpc_cidr
+      azs  = ["${var.region}a","${var.region}b"]
+      public_subnets  = var.public_subnets
+      private_subnets = var.private_subnets
+      enable_nat_gateway = true
+      single_nat_gateway = true
+    }
+    resource "aws_s3_bucket" "blobs" { bucket = "${local.name}-blobs" force_destroy = true }
+    resource "aws_s3_bucket_versioning" "blobs" {
+      bucket = aws_s3_bucket.blobs.id
+      versioning_configuration { status = "Enabled" }
+    }
+    resource "aws_s3_bucket_server_side_encryption_configuration" "blobs" {
+      bucket = aws_s3_bucket.blobs.id
+      rule { apply_server_side_encryption_by_default { sse_algorithm = "AES256" } }
+    }
+    module "db" {
+      source  = "terraform-aws-modules/rds/aws"
+      version = "~> 6.5"
+      identifier = "${local.name}-pg"
+      engine = "postgres"
+      engine_version = "16.3"
+      family = "postgres16"
+      instance_class = "db.t4g.micro"
+      allocated_storage = 20
+      db_name  = "cv_rag"
+      username = var.db_username
+      password = var.db_password
+      vpc_security_group_ids = [module.vpc.default_security_group_id]
+      subnet_ids = module.vpc.private_subnets
+      publicly_accessible = false
+      multi_az = false
+      deletion_protection = false
+      skip_final_snapshot = true
+    }
+    module "redis" {
+      source  = "terraform-aws-modules/elasticache/aws"
+      version = "~> 5.7"
+      cluster_id = "${local.name}-redis"
+      engine     = "redis"
+      node_type  = "cache.t4g.micro"
+      num_cache_nodes = 1
+      subnet_group_name = "${local.name}-redis-subnet"
+      vpc_security_group_ids = [module.vpc.default_security_group_id]
+      subnet_ids = module.vpc.private_subnets
+    }
+    module "ecs" {
+      source  = "terraform-aws-modules/ecs/aws"
+      version = "~> 5.11"
+      cluster_name = "${local.name}-cluster"
+    }
+    module "ecs_task_execution_role" {
+      source  = "terraform-aws-modules/iam/aws//modules/iam-assumable-role"
+      version = "~> 5.48"
+      create_role = true
+      role_name   = "${local.name}-exec-role"
+      trusted_role_services = ["ecs-tasks.amazonaws.com"]
+      custom_role_policy_arns = ["arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"]
+    }
+    resource "aws_ecs_task_definition" "api" {
+      family                   = "${local.name}-api"
+      network_mode             = "awsvpc"
+      requires_compatibilities = ["FARGATE"]
+      cpu    = "512"
+      memory = "1024"
+      execution_role_arn = module.ecs_task_execution_role.iam_role_arn
+      container_definitions = jsonencode([{
+        name = "api", image = var.container_image, essential = true,
+        portMappings = [{ containerPort = 8000, hostPort = 8000 }],
+        environment = [{ name = "DATA_DIR", value = "/data" }]
+      }])
+    }
+    resource "aws_lb" "api" {
+      name = "${local.name}-alb"
+      internal = false
+      load_balancer_type = "application"
+      subnets = module.vpc.public_subnets
+      security_groups = [module.vpc.default_security_group_id]
+    }
+    resource "aws_lb_target_group" "api" {
+      name = "${local.name}-tg"
+      port = 8000
+      protocol = "HTTP"
+      vpc_id = module.vpc.vpc_id
+      target_type = "ip"
+      health_check { path="/docs" port="8000" }
+    }
+    resource "aws_lb_listener" "http" {
+      load_balancer_arn = aws_lb.api.arn
+      port = 80
+      protocol = "HTTP"
+      default_action { type="forward" target_group_arn = aws_lb_target_group.api.arn }
+    }
+    resource "aws_ecs_service" "api" {
+      name = "${local.name}-api-svc"
+      cluster = module.ecs.cluster_id
+      task_definition = aws_ecs_task_definition.api.arn
+      desired_count = var.ecs_desired_count
+      launch_type = "FARGATE"
+      network_configuration {
+        assign_public_ip = true
+        subnets = module.vpc.public_subnets
+        security_groups = [module.vpc.default_security_group_id]
+      }
+      load_balancer {
+        target_group_arn = aws_lb_target_group.api.arn
+        container_name   = "api"
+        container_port   = 8000
+      }
+      depends_on = [aws_lb_listener.http]
+    }
+
+  tf_secrets_manager_openai_and_iam: |
+    resource "aws_secretsmanager_secret" "openai" {
+      name        = "${local.name}-OPENAI_API_KEY"
+      description = "OpenAI API key for ${local.name}"
+    }
+    resource "aws_secretsmanager_secret_version" "openai_v1" {
+      secret_id     = aws_secretsmanager_secret.openai.id
+      secret_string = "replace-me"
+    }
+    data "aws_iam_policy_document" "secrets_read" {
+      statement {
+        effect = "Allow"
+        actions = ["secretsmanager:GetSecretValue"]
+        resources = [aws_secretsmanager_secret.openai.arn]
+      }
+    }
+    resource "aws_iam_policy" "secrets_read" {
+      name   = "${local.name}-secrets-read"
+      policy = data.aws_iam_policy_document.secrets_read.json
+    }
+    resource "aws_iam_role_policy_attachment" "exec_can_read_secret" {
+      role       = module.ecs_task_execution_role.iam_role_name
+      policy_arn = aws_iam_policy.secrets_read.arn
+    }
+    # inject secret into API task
+    resource "aws_ecs_task_definition" "api_secret_patch" {
+      family                   = "${local.name}-api"
+      network_mode             = "awsvpc"
+      requires_compatibilities = ["FARGATE"]
+      cpu    = "512"
+      memory = "1024"
+      execution_role_arn = module.ecs_task_execution_role.iam_role_arn
+      container_definitions = jsonencode([{
+        name = "api", image = var.container_image, essential = true,
+        portMappings = [{ containerPort = 8000, hostPort = 8000 }],
+        environment = [{ name = "DATA_DIR", value = "/data" }],
+        secrets = [{ name="OPENAI_API_KEY", valueFrom=aws_secretsmanager_secret.openai.arn }]
+      }])
+      lifecycle { create_before_destroy = true }
+    }
+
+  celery_worker_v1: |
+    import os, io
+    from celery import Celery
+    from cv_parser import extract_text_from_pdf
+    from langchain_openai import OpenAIEmbeddings
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+    from langchain_community.vectorstores import FAISS
+
+    BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    app = Celery("cv_worker", broker=BROKER_URL, backend=BROKER_URL)
+    DATA_DIR = os.environ.get("DATA_DIR", "./data")
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    def _faiss_path(doc_id: str) -> str:
+      return os.path.join(DATA_DIR, f"faiss_{doc_id}")
+
+    @app.task(acks_late=True)
+    def ingest_pdf_task(doc_id: str, pdf_bytes: bytes):
+      text = extract_text_from_pdf(io.BytesIO(pdf_bytes))
+      splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=200)
+      chunks = splitter.split_text(text)
+      vs = FAISS.from_texts(chunks, OpenAIEmbeddings())
+      vs.save_local(_faiss_path(doc_id))
+      return {"document_id": doc_id, "chunks": len(chunks)}
+
+  tf_ecs_worker_service: |
+    resource "aws_ecs_task_definition" "worker" {
+      family                   = "${local.name}-worker"
+      network_mode             = "awsvpc"
+      requires_compatibilities = ["FARGATE"]
+      cpu    = "512"
+      memory = "1024"
+      execution_role_arn = module.ecs_task_execution_role.iam_role_arn
+      container_definitions = jsonencode([{
+        name = "worker",
+        image = var.container_image,
+        essential = true,
+        command = ["sh","-c","celery -A worker_app worker -l info --concurrency=2"],
+        environment = [
+          { name = "DATA_DIR", value = "/data" },
+          { name = "REDIS_URL", value = "redis://"+module.redis.primary_endpoint_address+":6379/0" }
+        ],
+        secrets = [{ name="OPENAI_API_KEY", valueFrom=aws_secretsmanager_secret.openai.arn }]
+      }])
+    }
+    resource "aws_ecs_service" "worker" {
+      name            = "${local.name}-worker-svc"
+      cluster         = module.ecs.cluster_id
+      task_definition = aws_ecs_task_definition.worker.arn
+      desired_count   = 1
+      launch_type     = "FARGATE"
+      network_configuration {
+        assign_public_ip = true
+        subnets         = module.vpc.public_subnets
+        security_groups = [module.vpc.default_security_group_id]
+      }
+    }
