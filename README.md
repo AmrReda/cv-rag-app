@@ -306,3 +306,10 @@ But yes, architecturally it’s easy:
 * There’s no DB, no infra — just `python app.py`.
 
 This is the minimal working skeleton for an AI recruiter assistant / talent screener / CV intelligence tool, built with LangChain + Gradio.
+
+## FastAPI API (service entrypoint)
+
+- Run locally: `OPENAI_API_KEY=... uvicorn api.main:app --reload --port 8000`
+- Endpoints:
+  - POST /ingestions (multipart file) -> { document_id }
+  - POST /queries { document_id, question } -> { answer }
