@@ -16,6 +16,19 @@ def on_upload(file):
 
 
 def on_ask(user_question, chat_history, session_state):
+    """
+    Handles the user's question in the chat interface.
+    Checks if a session exists, asks the question using the RAG pipeline,
+    and updates the chat history.
+
+    Args:
+        user_question (str): The question asked by the user.
+        chat_history (list): The current chat history.
+        session_state (dict): The session state containing the QA chain.
+
+    Returns:
+        tuple: Updated chat history, session state, and an empty string to clear the input box.
+    """
     if session_state is None:
         # No CV uploaded yet
         chat_history = chat_history + [("You", user_question),

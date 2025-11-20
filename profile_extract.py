@@ -9,6 +9,16 @@ TECH_KEYWORDS = [
 
 
 def extract_skills(text: str):
+    """
+    Extracts technical skills from the text based on
+    a predefined list of keywords.
+
+    Args:
+        text (str): The text to search for skills.
+
+    Returns:
+        list: A sorted list of unique skills found in the text.
+    """
     found = set()
     lower = text.lower()
     for kw in TECH_KEYWORDS:
@@ -18,6 +28,16 @@ def extract_skills(text: str):
 
 
 def infer_seniority(text: str):
+    """
+    Infers the seniority level of the candidate based on keywords in the text.
+    Uses a naive heuristic approach.
+
+    Args:
+        text (str): The text to analyze.
+
+    Returns:
+        str: The inferred seniority level.
+    """
     # naive heuristic
     if re.search(r"\b(Head of|Principal|Staff Engineer|Lead|Engineering Manager|Manager)\b", text, re.I):
         return "Senior / Lead level"
@@ -27,6 +47,16 @@ def infer_seniority(text: str):
 
 
 def build_profile_summary_markdown(text: str) -> str:
+    """
+    Builds a markdown summary of the candidate's profile.
+    Includes inferred seniority and detected skills.
+
+    Args:
+        text (str): The raw text of the CV.
+
+    Returns:
+        str: A markdown formatted string summarizing the profile.
+    """
     skills = extract_skills(text)
     seniority = infer_seniority(text)
 
