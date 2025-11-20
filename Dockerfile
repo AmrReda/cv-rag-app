@@ -3,7 +3,8 @@ FROM python:3.11-slim AS builder
 WORKDIR /app
 COPY requirements.txt requirements-api.txt ./
 RUN pip install --upgrade pip && \
-    pip wheel --wheel-dir=/wheels -r requirements.txt -r requirements-api.txt
+    pip wheel --wheel-dir=/wheels -r requirements.txt -r requirements-api.txt && \
+    cp requirements.txt requirements-api.txt /wheels/
 
 # ---- runtime ----
 FROM python:3.11-slim
