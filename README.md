@@ -21,6 +21,26 @@ This project has been refactored from a simple prototype into a scalable service
 
 ## 🔍 High-level Architecture
 
+### System Context
+
+![System Context](./docs/imgs/System%20Context%20Diagram.png)
+
+### AWS Deployment (ECS/Fargate baseline)
+
+![AWS Deployment](./docs/imgs/AWS%20Deployment.png)
+
+### Sequences
+
+**RAG Query Sequence**
+
+
+![RAG Query Sequence](./docs/imgs/RAG%20Query%20Sequence.png)
+
+**Ingestion (Async) Sequence**
+
+
+![Ingestion (Async) Sequence](./docs/imgs/Ingestion%20(Async)%20Sequence.png)
+
 1. **Upload CV (PDF)**
    The file is uploaded via API or UI.
    The ingestion task is offloaded to a Celery worker.
@@ -41,6 +61,7 @@ This project has been refactored from a simple prototype into a scalable service
 5. **JD Matching & Analysis**
    * Upload a JD to score the candidate (0-100 match).
    * Extract logistics (location, notice period) and experience timeline automatically.
+
 
 ---
 
